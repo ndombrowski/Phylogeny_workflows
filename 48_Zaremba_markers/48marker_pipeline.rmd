@@ -1,0 +1,441 @@
+---
+title: "Phylogenetic pipeline for 48 Zaremba marker set"
+author: "Nina Dombrowski"
+affiliation: "NIOZ"
+date: "`r Sys.Date()`"
+knit: (function(input_file, encoding) {   out_dir <- 'docs';   rmarkdown::render(input_file,  encoding=encoding,  output_file=file.path(dirname(input_file), out_dir, '51marker_workflow.html'))})
+output:
+  rmdformats::readthedown:
+    highlight: kate
+editor_options: 
+  chunk_output_type: console
+---
+
+
+<p align="left">
+  <img width="50" height="50" src="/Users/ninadombrowski/Desktop/WorkingDir/General/Pictures_general/text4236.png">
+</p>
+
+
+
+##################################
+##################################
+# General info
+##################################
+##################################
+
+Objective: Run phylogenetic analyses using a custom set of reference genomes and using a set of 48 markers established by Zaremba et al., 2017.
+
+General notice: 
+The most important thing is a well named a short but descriptive genome name (DO NOT USE '-' and limit use of other symbols). 
+For the set of reference genomes I chose to  use the GCA_XXX number as point of reference and I add it into the fasta header in step 3.
+
+To add a more helpful name including the taxonomy I have a mapping file (current reference set for the archaea is v5 and for bacteria is v5)
+
+
+
+## Version programs
+##################################
+
+- prokka 1.14-dev
+- Python 2.7.5
+- perl v5.16.3
+- HMMER 3.1b2
+- iqtree/2.1.1
+- MAFFT v7.407
+- BMGE-1.12
+
+
+
+## Files/Databases needed
+##################################
+
+- 48_arcogs
+- All_Arcogs_2018.hmm
+
+
+
+## External scripts needed
+##################################
+
+**perl**
+
+- best_hmmer.pl (13 columns, relevant columns: 1, 5 (evalue), 6 (bitscore))
+- screen_list_new.pl
+- Replace_tree_names.pl
+- catfasta2phyml.pl
+
+
+
+## Files needed
+##################################
+
+- genome of interests (this tutorial works by downloading genomes from NCBI but you can adjust this steps by providing the paths to your genomes)
+  - The script assumes that you have the bins in a certain folder and certain file name, which in this workflow is
+  **faa/Prokka/All_Genomes_clean.faa**
+- databases to find marker genes (52tested_inclTIGR.hmm)
+
+
+
+
+###################################################################################
+###################################################################################
+# Setup working environment
+###################################################################################
+###################################################################################
+
+
+##  Connect to server
+##################################
+
+Change username to your personal username. If you do not have access to ada yet, contact [Hans Malschaert](hans.malschaert@nioz.nl).
+
+```bash
+
+#log into server
+ssh username@server
+
+```
+
+Ideally you want to work within a screen (depending on your system of course) since several steps take a while to run especially if you have a large number of genomes.
+
+
+##  Define variables
+##################################
+
+```bash 
+
+wdir="/export/lv1/user/ndombrowski/Phylogeny_tutorial/48_markers"
+
+cpus=10
+
+perl_scripts="/export/data01/tools/scripts/perl"
+
+db_path='/export/data01/databases/arCOG/arCOGs2019/All_Arcogs_2018.hmm'
+marker_list='/export/lv1/user/spang_team/Databases/48markers'
+taxon_mapping='~/../spang_team/Databases/Archaea_Reference_Set/names_to_replace_Nina'
+
+```
+
+Notice: 
+
+- The taxon_mapping file is optional but generating such a file will allow to add a more detailed taxon string into the tree files. 
+- The taxon_mapping file should have two columns, one with the orginal ID in the tree and second the name we want to have:
+
+
+<p>
+  <img width=500, height=500, src="/Users/ninadombrowski/Desktop/WorkingDir/Github_Workflows/Phylogenies/51_markers/figures/Picture2.png">
+</p>
+
+
+
+##  Set working directory
+##################################
+
+```bash
+
+#go to your home directory, or to wherever you want to work
+cd $wdir
+
+```
+
+
+
+
+
+# 2. cp prokka protein files of reference genomes with genomes of interest
+##################################
+
+Notice: 
+
+- Adjust this part as needed for your own genomes
+- ideally add the genome name into your fasta header (step 3 gives an example on how to do that if your genome name = file name)
+- Ideally the header looks something like this: `>GCA_000008085-CALJACFG_00010`
+  - avoid unneccassary symbols, such as spaces or dots 
+  - use `-` to separate the bin from the protienID
+  - use `_` for other parts of the name
+  - DO NOT use spaces
+- You of course can use your own naming scheme but some parts of the workflow might need to be adjusted
+
+
+
+## prepare a list of genomes we want to work with
+
+```bash
+
+mkdir FileLists
+
+#add the list of genomes into this text doument
+nano FileLists/Genomes_of_interest
+
+```
+
+The \ file we generate should look something like this:
+
+<p>
+  <img width=200, height=200, src="/Users/ninadombrowski/Desktop/WorkingDir/Github_Workflows/Phylogenies/51_markers/figures/Picture1.png">
+</p>
+
+
+## Copy genomes of interest
+
+
+```bash  
+
+mkdir faa
+mkdir faa/single
+
+#cp UAP2 reference Genomes
+for sample in `cat FileLists/Genomes_of_interest`; do cp /export/lv1/user/spang_team/Projects/Alti_UPA2/prokka/faa/renamed/${sample}* faa/single; done
+
+#cp UAP2 BS Genomes
+for sample in `cat FileLists/Genomes_of_interest`; do cp /export/lv1/user/spang_team/Projects/BlackSea18/Prokka/V2/renamed/${sample}* faa/single; done
+
+#control that we have all genomes --> 40 genomes
+ll faa/single/* | wc -l
+
+#concatenate genomes and clean fasta header
+cat faa/single/*.faa > faa/All_Genomes.faa
+cut -f1 -d " "  faa/All_Genomes.faa > faa/All_Genomes_clean.faa
+gzip faa/single/*
+
+```
+
+The header should lool something like this: `>GCA_002494525-GCA_002494525_00010`
+
+
+## Extra info: adding the file name (=genome name) into the fasta header
+
+
+<div class="alert-danger">
+You only need to run this part of the code in case your genome name is not part of the fasta header
+</div>
+
+
+```bash 
+
+cd faa
+mkdir renamed
+for i in *faa; do awk '/>/{sub(">","&"FILENAME"|");sub(/\.faa/,x)}1' $i > renamed/$i; done
+cd ..
+
+```
+
+
+
+
+
+# 4. search genes and clean up file names and extract proteins sequences
+##################################
+
+
+```bash
+
+#add list of markers to wdir
+cp $marker_list .
+
+#prep folder for hmmsearch
+mkdir Hmmersearch
+
+#run search
+hmmsearch --tblout Hmmersearch/sequence_results.txt -o Hmmersearch/results_all.txt --domtblout Hmmersearch/domain_results.txt --notextw --cpu $cpus $db_path  faa/All_Genomes.faa
+
+#format the full table and only select sequences above a certain evalue
+sed 's/ \+ /\t/g' Hmmersearch/sequence_results.txt | sed '/^#/d'| sed 's/ /\t/g'| awk -F'\t' -v OFS='\t' '{print $1, $3, $6, $5, $1}' | awk -F'\t' -v OFS='\t' '($4 + 0) <= 1E-3'  > Hmmersearch/sequence_results_red_e_cutoff.txt
+
+#get best hit for each protein based on bit score, and then evalue, also add the binID into the first column
+sort -t$'\t' -k3,3gr -k4,4g Hmmersearch/sequence_results_red_e_cutoff.txt | sort -t$'\t' --stable -u -k1,1  | sort -t$'\t' -k3,3gr -k4,4g | awk -F'\t' -v OFS='\t' '{split($1,a,"-"); print a[1], $5, $2, $3,$4}' >  Hmmersearch/All_markerss_hmm.txt
+
+#separate the 51 marker genes into indiv. files
+mkdir Hmmersearch/OGs
+
+for sample in `cat  48_arcogs`; do grep "$sample" Hmmersearch/All_markerss_hmm.txt > Hmmersearch/OGs/${sample}.txt; done
+
+ll Hmmersearch/OGs/*txt | wc -l
+#51
+
+#search and remove duplicates and keep only the best hit
+#notice, in the initial best hit search we checked fo duplicated hits for an indiv. protein, now however,  we specifically search for gene duplications hmmsearchTable would not pick up because it compares the gene name and here we compare the genome name
+mkdir Hmmersearch/deduplicated
+
+for sample in `cat 48_arcogs`; do sort -t$'\t' -k4,4gr -k5,5g Hmmersearch/OGs/${sample}* | sort -t$'\t' --stable -u -k1,1 |  sort -t$'\t' -k4,4gr -k5,5g  > Hmmersearch/deduplicated/${sample}.txt ; done >> duplicated.txt
+
+awk -F'\t' '{print $1}' TIGR03722.txt | sort | uniq -d
+
+#get list of proteins to extract from faa file
+mkdir Hmmersearch/protein_list
+
+for sample in `cat  48_arcogs`; do awk -F'\t' -v OFS='\t' '{print $2 }' Hmmersearch/deduplicated/$sample* > Hmmersearch/protein_list/$sample |LC_ALL=C  sort ; done
+
+
+#extract faa sequences
+mkdir Marker_Genes
+mkdir Marker_Genes/raw
+
+for sample in `cat  48_arcogs`; do perl $perl_scripts/screen_list_new.pl Hmmersearch/protein_list/$sample faa/All_Genomes.faa keep > Marker_Genes/raw/${sample}.faa; done
+
+#shorten header to be able to concatenate later (= remove protein ID)
+mkdir Marker_Genes/renamed
+
+for sample in `cat 48_arcogs`
+do
+cut -f1 -d "-" Marker_Genes/raw/$sample*>> Marker_Genes/renamed/${sample}.faa
+done
+
+```
+
+
+
+
+
+
+# 6. Prepare alignment
+##################################
+
+Notice:
+
+Adjust the parallel option (-j) according to the free cpus on ada, take care not to use more than 30% of the available cpus
+
+## 6a. align with mafft_linsi
+
+```bash 
+
+mkdir Alignment
+mkdir Alignment/mafft_linsi
+
+parallel -j2 'i={}; nice -n 10 mafft-linsi --reorder --thread 4 Marker_Genes/renamed/$i* > Alignment/mafft_linsi/${i}.aln ' ::: `cat 48_arcogs`
+
+```
+
+## 6b. Trim using BMGE
+
+```bash
+
+mkdir Alignment/BMGE
+mkdir Alignment/BMGE/h0.55
+
+parallel -j2 'i={}; nice -n 10 java -jar /opt/biolinux/BMGE-1.12/BMGE.jar -i Alignment/mafft_linsi/$i* -t AA -m BLOSUM30 -h 0.55 -of Alignment/BMGE/h0.55/$i ' :::  `cat 48_arcogs` >> trimming.txt
+
+```
+
+
+## 6c. concatenate single marker genes
+
+Notice: 
+
+The marker set was established mainly on DPANN archaea, if you deal with new lineages you might want to also run the single gene trees and check them for issues with horizontal gene transfer.
+
+```bash
+mkdir Alignment/concatenated
+
+perl $perl_scripts/catfasta2phyml.pl -f -c Alignment/BMGE/h0.55/* > Alignment/concatenated/48markers_ALR_DPANN_ArcRefv5_v1.faa
+
+```
+
+Our alignment looks like this :
+
+Alignment/BMGE/h0.55/gtdb_PF00466.15 = 1-313
+Alignment/BMGE/h0.55/gtdb_PF00687.16 = 314-529
+Alignment/BMGE/h0.55/gtdb_PF00827.12 = 530-692
+Alignment/BMGE/h0.55/gtdb_PF00900.15 = 693-909
+Alignment/BMGE/h0.55/gtdb_PF01000.21 = 910-1111
+Alignment/BMGE/h0.55/gtdb_PF01015.13 = 1112-1324
+Alignment/BMGE/h0.55/gtdb_PF01090.14 = 1325-1532
+Alignment/BMGE/h0.55/gtdb_PF01157.13 = 1533-1623
+Alignment/BMGE/h0.55/gtdb_PF01200.13 = 1624-1696
+Alignment/BMGE/h0.55/gtdb_PF01655.13 = 1697-1822
+Alignment/BMGE/h0.55/gtdb_PF01798.13 = 1823-2087
+Alignment/BMGE/h0.55/gtdb_PF07541.7 = 2088-2330
+Alignment/BMGE/h0.55/gtdb_PF13685.1 = 2331-2677
+Alignment/BMGE/h0.55/OG525. = 2678-3255
+Alignment/BMGE/h0.55/PF00410.14 = 3256-3384
+Alignment/BMGE/h0.55/PF00673 = 3385-3547
+Alignment/BMGE/h0.55/TIGR00037 = 3548-3696
+Alignment/BMGE/h0.55/TIGR00055 = 3697-3921
+Alignment/BMGE/h0.55/TIGR00064 = 3922-4242
+Alignment/BMGE/h0.55/TIGR00092 = 4243-4639
+Alignment/BMGE/h0.55/TIGR00111 = 4640-4989
+Alignment/BMGE/h0.55/TIGR00279 = 4990-5162
+Alignment/BMGE/h0.55/TIGR00291 = 5163-5393
+Alignment/BMGE/h0.55/TIGR00335 = 5394-5588
+Alignment/BMGE/h0.55/TIGR00373 = 5589-5810
+Alignment/BMGE/h0.55/TIGR00405 = 5811-5962
+Alignment/BMGE/h0.55/TIGR00448 = 5963-6158
+Alignment/BMGE/h0.55/TIGR00483 = 6159-6583
+Alignment/BMGE/h0.55/TIGR00491 = 6584-7153
+Alignment/BMGE/h0.55/TIGR00501 = 7154-7443
+Alignment/BMGE/h0.55/TIGR00967 = 7444-7906
+Alignment/BMGE/h0.55/TIGR00982 = 7907-8051
+Alignment/BMGE/h0.55/TIGR01008 = 8052-8312
+Alignment/BMGE/h0.55/TIGR01012 = 8313-8519
+Alignment/BMGE/h0.55/TIGR01020 = 8520-8776
+Alignment/BMGE/h0.55/TIGR01028 = 8777-8977
+Alignment/BMGE/h0.55/TIGR01171 = 8978-9215
+Alignment/BMGE/h0.55/TIGR02065 = 9216-9449
+Alignment/BMGE/h0.55/TIGR02389 = 9450-9819
+Alignment/BMGE/h0.55/TIGR02390 = 9820-10668
+Alignment/BMGE/h0.55/TIGR03626 = 10669-10978
+Alignment/BMGE/h0.55/TIGR03628 = 10979-11108
+Alignment/BMGE/h0.55/TIGR03629 = 11109-11255
+Alignment/BMGE/h0.55/TIGR03633 = 11256-11502
+Alignment/BMGE/h0.55/TIGR03670 = 11503-12101
+Alignment/BMGE/h0.55/TIGR03673 = 12102-12243
+Alignment/BMGE/h0.55/TIGR03675 = 12244-12877
+Alignment/BMGE/h0.55/TIGR03676 = 12878-13238
+Alignment/BMGE/h0.55/TIGR03680 = 13239-13633
+Alignment/BMGE/h0.55/TIGR03722 = 13634-13956
+
+
+
+
+# 7. run iqtree
+##################################
+
+
+## single gene trees
+
+```bash
+
+mkdir Phylogeny
+mkdir Phylogeny/single
+
+#run trees
+module load iqtree/2.1.1
+parallel -j10 'i={}; iqtree2 -s Alignment/BMGE/h0.55/${i}.faa -m LG+C10+F+R  -nt 4 -wbtl -bb 1000 -bnni -pre Phylogeny/single/${i}' ::: `cat 48_arcogs`
+
+#rename tree files and add taxon string
+cd Phylogeny/single
+parallel -j10 'i={}; perl $perl_scripts/Replace_tree_names.pl $taxon_mapping $i > ${i}_renamed' ::: *treefile
+cd ../..
+
+```
+
+
+## concatenated tree
+
+While in our experience the model below is good for the marker set used you might also want to run a model test.
+
+```bash 
+
+mkdir Phylogeny/concat
+
+cp Alignment/concatenated/48markers_ALR_DPANN_ArcRefv5_v1.faa Phylogeny/concat
+cd Phylogeny/concat
+
+#run iqtree
+module load iqtree/2.1.1
+iqtree2 -s 48markers_ALR_DPANN_ArcRefv5_v1.faa -m LG+C60+F+R -nt AUTO -bb 1000 -alrt 1000
+
+#rename treefile for easier handling (mapping file available for v6 set)
+perl $perl_scripts/Replace_tree_names.pl $taxon_mapping 48markers_ALR_DPANN_ArcRefv5_v1.faa.treefile > 48markers_ALR_DPANN_ArcRefv5_v1.faa.treefile_renamed
+
+```
+
+If you want to run a model test you HAVE TO add the C60 series manually.
+
+```bash
+
+iqtree2 -s alignment.aln -m MFP -madd LG+C10,LG+C20,LG+C30,LG+C40,LG+C50,LG+C60,LG+C10+R+F,LG+C20+R+F,LG+C30+R+F,LG+C40+R+F,LG+C50+R+F,LG+C60+R+F
+
+
+```
